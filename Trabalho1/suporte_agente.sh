@@ -31,10 +31,7 @@ while true; do
         if [ "$pedido" = "quit" ]; then
             echo "Recebido comando para encerrar."
             break
-        else
-            echo "Processando pedido: $pedido"
-            # Espera aleatória entre 1 e 5 segundos
-            sleep $((RANDOM % 5 + 1))
+       
         fi
     fi
 done
