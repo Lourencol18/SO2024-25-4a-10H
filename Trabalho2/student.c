@@ -7,7 +7,7 @@
 #include <string.h>
 #include <errno.h>
 
-#define BSIZE 80
+#define BSIZE 128  // Aumente o tamanho para evitar o truncamento
 #define NOMEFIFO "/tmp/suporte"  // Pipe comum para comunicação com support_agent
 
 int main(int argc, char const *argv[])
@@ -42,24 +42,30 @@ int main(int argc, char const *argv[])
     }
 
     // Envia o pedido para o support_agent no formato "aluno_inicial num_alunos student_fifo"
-    snprintf(buf, BSIZE, "%d %d %s", aluno_inicial, num_alunos, student_fifo);
+    int len = snprintf(buf, BSIZE, "%d %d %s", aluno_inicial, num_alunos, student_fifo);
+    if (len >= BSIZE) {
+        fprintf(stderr, "Aviso: mensagem truncada\n");
+    }
     write(fd, buf, strlen(buf) + 1);
     close(fd);
 
-    // Abre o pipe de resposta para receber o número de alunos inscritos
+    // Abre o pipe de resposta para receber o número de alunos inscritos como string
     if ((fd_response = open(student_fifo, O_RDONLY)) < 0) {
         perror("open response fifo");
         unlink(student_fifo);
         exit(1);
     }
- 
-   // Recebe e faz a leitura
-    int alunos_inscritos;
-    read(fd_response, &alunos_inscritos, sizeof(int));
+
+    // Recebe e faz a leitura da resposta como string
+    char alunos_inscritos_str[BSIZE];
+    ssize_t bytes_read = read(fd_response, alunos_inscritos_str, BSIZE - 1);
+    if (bytes_read > 0) {
+        alunos_inscritos_str[bytes_read] = '\0';  // Adiciona o terminador de string
+    }
     close(fd_response);
 
-    // Exibe informações finais
-    printf("student %d: alunos inscritos=%d\n", nstud, alunos_inscritos);
+    // Exibe a resposta final recebida como string
+    printf("student %d: alunos inscritos=%s\n", nstud, alunos_inscritos_str);
 
     // Remove o pipe específico do student
     unlink(student_fifo);
