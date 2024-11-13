@@ -40,8 +40,9 @@ for ((i=1; i<=NSTUD; i++)); do
     NUM_ALUNOS=$(( NALUN / NSTUD ))
 
 #Cria o named pipe específico para este student
-    STUDENT_FIFO="/tmp/student$i"
-    mkfifo "$STUDENTFIFO"
+ STUDENT_FIFO="/tmp/student$i"
+mkfifo "$STUDENT_FIFO"
+
 
     # Executa o student em background
     ./student "$i" "$ALUNO_INICIAL" "$NUM_ALUNOS" &
