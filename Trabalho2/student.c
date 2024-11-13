@@ -11,8 +11,10 @@
 #define BSIZE 128
 #define NOMEFIFO "/tmp/suporte"
 
-int main(int argc, char const *argv[]) {
-    if (argc != 4) {
+int main(int argc, char const *argv[])
+{
+    if (argc != 4)
+    {
         fprintf(stderr, "Usage: %s <nstud> <aluno_inicial> <num_alunos>\n", argv[0]);
         exit(1);
     }
@@ -29,13 +31,15 @@ int main(int argc, char const *argv[]) {
 
     // Criação do pipe nomeado específico para este student
     snprintf(student_fifo, BSIZE, "/tmp/student_%d", nstud);
-    if (mkfifo(student_fifo, 0666) == -1 && errno != EEXIST) {
+    if (mkfifo(student_fifo, 0666) == -1 && errno != EEXIST)
+    {
         perror("mkfifo");
         exit(1);
     }
 
     // Abre o pipe para comunicação com o support_agent
-    if ((fd = open(NOMEFIFO, O_WRONLY)) < 0) {
+    if ((fd = open(NOMEFIFO, O_WRONLY)) < 0)
+    {
         perror("open");
         unlink(student_fifo);
         exit(1);
@@ -43,10 +47,12 @@ int main(int argc, char const *argv[]) {
 
     // Envia o pedido para o support_agent
     int len = snprintf(buf, BSIZE, "%d %d %s", aluno_inicial, num_alunos, student_fifo);
-    if (len >= BSIZE) {
+    if (len >= BSIZE)
+    {
         fprintf(stderr, "Aviso: mensagem truncada\n");
     }
-    if (write(fd, buf, strlen(buf) + 1) != (strlen(buf) + 1)) {
+    if (write(fd, buf, strlen(buf) + 1) != (strlen(buf) + 1))
+    {
         perror("write");
         close(fd);
         unlink(student_fifo);
@@ -55,7 +61,8 @@ int main(int argc, char const *argv[]) {
     close(fd);
 
     // Abre o pipe de resposta para receber o número de alunos inscritos
-    if ((fd_response = open(student_fifo, O_RDONLY)) < 0) {
+    if ((fd_response = open(student_fifo, O_RDONLY)) < 0)
+    {
         perror("open response fifo");
         unlink(student_fifo);
         exit(1);
@@ -64,10 +71,12 @@ int main(int argc, char const *argv[]) {
     // Recebe a resposta
     char alunos_inscritos_str[BSIZE];
     ssize_t bytes_read;
-    while ((bytes_read = read(fd_response, alunos_inscritos_str, BSIZE - 1)) > 0) {
+    while ((bytes_read = read(fd_response, alunos_inscritos_str, BSIZE - 1)) > 0)
+    {
         alunos_inscritos_str[bytes_read] = '\0';
     }
-    if (bytes_read == -1) {
+    if (bytes_read == -1)
+    {
         perror("read");
     }
     close(fd_response);
@@ -77,6 +86,6 @@ int main(int argc, char const *argv[]) {
 
     // Remove o pipe específico do student
     unlink(student_fifo);
-    
+
     return 0;
 }
