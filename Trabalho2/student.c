@@ -1,91 +1,76 @@
-/* student.c */
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <stdio.h>
-#include <unistd.h>
 #include <stdlib.h>
-#include <fcntl.h>
 #include <string.h>
-#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h> // Para mkfifo
 
-#define BSIZE 128
-#define NOMEFIFO "/tmp/suporte"
+#define PIPE_SUPPORT "/tmp/suporte"
 
-int main(int argc, char const *argv[])
+int main(int argc, char *argv[])
 {
     if (argc != 4)
     {
-        fprintf(stderr, "Usage: %s <nstud> <aluno_inicial> <num_alunos>\n", argv[0]);
-        exit(1);
+        fprintf(stderr, "Usage: %s <student_id> <initial_student> <num_students>\n", argv[0]);
+        exit(EXIT_FAILURE);
     }
 
-    int nstud = atoi(argv[1]);
-    int aluno_inicial = atoi(argv[2]);
-    int num_alunos = atoi(argv[3]);
-    char student_fifo[BSIZE];
-    int fd, fd_response;
-    char buf[BSIZE];
+    int student_id = atoi(argv[1]);
+    int initial_student = atoi(argv[2]);
+    int num_students = atoi(argv[3]);
 
-    // Exibe informações iniciais
-    printf("student %d: aluno inicial=%d, número de alunos=%d\n", nstud, aluno_inicial, num_alunos);
+    printf("[student %d] Pipe principal definido como: %s\n", student_id, PIPE_SUPPORT);
 
-    // Criação do pipe nomeado específico para este student
-    snprintf(student_fifo, BSIZE, "/tmp/student_%d", nstud);
-    if (mkfifo(student_fifo, 0666) == -1 && errno != EEXIST)
+    printf("[student %d] Iniciado. Aluno inicial: %d, Total de alunos: %d\n", student_id, initial_student, num_students);
+
+    char student_pipe[256];
+    snprintf(student_pipe, sizeof(student_pipe), "/tmp/student_%d", student_id);
+
+    // Criar o named pipe do estudante
+    if (access(student_pipe, F_OK) == -1)
     {
-        perror("mkfifo");
-        exit(1);
+        if (mkfifo(student_pipe, 0666) == -1)
+        {
+            perror("[student] mkfifo");
+            exit(EXIT_FAILURE);
+        }
+        printf("[student %d] Pipe criado: %s\n", student_id, student_pipe);
     }
-
-    // Abre o pipe para comunicação com o support_agent
-    if ((fd = open(NOMEFIFO, O_WRONLY)) < 0)
+    else
     {
-        perror("open");
-        unlink(student_fifo);
-        exit(1);
+        printf("[student %d] Pipe jÃ¡ existe: %s\n", student_id, student_pipe);
     }
-
-    // Envia o pedido para o support_agent
-    int len = snprintf(buf, BSIZE, "%d %d %s", aluno_inicial, num_alunos, student_fifo);
-    if (len >= BSIZE)
+    // Enviar pedido ao suporte
+    int fd_support = open(PIPE_SUPPORT, O_WRONLY);
+    if (fd_support == -1)
     {
-        fprintf(stderr, "Aviso: mensagem truncada\n");
+        perror("[student] open support pipe");
+        unlink(student_pipe);
+        exit(EXIT_FAILURE);
     }
-    if (write(fd, buf, strlen(buf) + 1) != (strlen(buf) + 1))
+    printf("[student %d] Conectado ao pipe principal: %s\n", student_id, PIPE_SUPPORT);
+
+    char request[512];
+    snprintf(request, sizeof(request), "%d %d %s", initial_student, num_students, student_pipe);
+    write(fd_support, request, strlen(request) + 1);
+    printf("[student %d] Pedido enviado: %s\n", student_id, request);
+    close(fd_support);
+
+    // Receber resposta
+    int fd_student = open(student_pipe, O_RDONLY);
+    if (fd_student == -1)
     {
-        perror("write");
-        close(fd);
-        unlink(student_fifo);
-        exit(1);
-    }
-    close(fd);
-
-    // Abre o pipe de resposta para receber o número de alunos inscritos
-    if ((fd_response = open(student_fifo, O_RDONLY)) < 0)
-    {
-        perror("open response fifo");
-        unlink(student_fifo);
-        exit(1);
+        perror("[student] open student pipe");
+        unlink(student_pipe);
+        exit(EXIT_FAILURE);
     }
 
-    // Recebe a resposta
-    char alunos_inscritos_str[BSIZE];
-    ssize_t bytes_read;
-    while ((bytes_read = read(fd_response, alunos_inscritos_str, BSIZE - 1)) > 0)
-    {
-        alunos_inscritos_str[bytes_read] = '\0';
-    }
-    if (bytes_read == -1)
-    {
-        perror("read");
-    }
-    close(fd_response);
+    int students_registered;
+    read(fd_student, &students_registered, sizeof(students_registered));
+    close(fd_student);
+    printf("[student %d] Resposta recebida: %d alunos inscritos\n", student_id, students_registered);
 
-    // Exibe a resposta final
-    printf("student %d: alunos inscritos=%s\n", nstud, alunos_inscritos_str);
-
-    // Remove o pipe específico do student
-    unlink(student_fifo);
-
+    unlink(student_pipe);
+    printf("[student %d] Pipe removido: %s\n", student_id, student_pipe);
     return 0;
 }

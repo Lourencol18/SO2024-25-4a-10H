@@ -1,153 +1,135 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <errno.h>
-#include <pthread.h>
 
-#define FIFO_IN "/tmp/suporte"
-#define BSIZE 256
-#define NDISCIP 5 // Número de disciplinas
-#define NHOR 20   // Número total de horários (5 disciplinas * 4 horários cada)
-#define NLUG 30   // Número de lugares por horário
-#define NALUN 100 // Número total de alunos
+#define PIPE_SUPPORT "/tmp/suporte"
+#define MAX_DISCIPLINES 10
+#define MAX_HORARIOS 5
 
 typedef struct
 {
-    int disciplina;
-    int horario;
-    int vagas_disponiveis;
-    int vagas_totais;
-} HorarioInfo;
+    int vagas;
+} Horario;
 
-HorarioInfo horarios[NDISCIP][NHOR];
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
-
-// Função para processar um único pedido
-void processar_pedido(char *msg_in)
+typedef struct
 {
-    pthread_mutex_lock(&mutex);
-    char msg_out[BSIZE];
-    printf("Mensagem recebida: %s\n", msg_in);
+    Horario horarios[MAX_HORARIOS];
+} Disciplina;
 
-    int aluno_inicial, num_alunos;
-    char nome_resp[BSIZE];
-    sscanf(msg_in, "%d %d %s", &aluno_inicial, &num_alunos, nome_resp);
+Disciplina disciplinas[MAX_DISCIPLINES];
+pthread_mutex_t lock;
 
-    int inscritos = 0;
-    int disciplinas_inscritas[NDISCIP] = {0};    // Contador para inscrições por disciplina
-    int horarios_inscritos[NDISCIP][NHOR] = {0}; // Contador para inscrições por disciplina e horário
+void *handle_request(void *arg)
+{
+    char *message = (char *)arg;
 
-    for (int i = 0; i < num_alunos; i++)
+    int initial_student, num_students;
+    char response_pipe[256];
+    sscanf(message, "%d %d %s", &initial_student, &num_students, response_pipe);
+    printf("[support_agent] Pedido recebido: %s\n", message);
+
+    pthread_mutex_lock(&lock);
+    int students_registered = 0;
+
+    // Alocar alunos a horários
+    int remaining_students = num_students;
+
+    for (int d = 0; d < MAX_DISCIPLINES && remaining_students > 0; d++)
     {
-        int horario_encontrado = 0;
-
-        // Itera sobre disciplinas e horários
-        for (int d = 0; d < NDISCIP && !horario_encontrado; d++)
+        for (int h = 0; h < MAX_HORARIOS && remaining_students > 0; h++)
         {
-            for (int h = 0; h < NHOR && !horario_encontrado; h++)
+            if (disciplinas[d].horarios[h].vagas > 0)
             {
-                if (horarios[d][h].vagas_disponiveis > 0)
-                {
-                    horarios[d][h].vagas_disponiveis--;
-                    inscritos++;
-                    disciplinas_inscritas[d]++;
-                    horarios_inscritos[d][h]++;
-                    horario_encontrado = 1;
-                }
-            }
-        }
+                int allocated = disciplinas[d].horarios[h].vagas >= remaining_students ? remaining_students : disciplinas[d].horarios[h].vagas;
+                disciplinas[d].horarios[h].vagas -= allocated;
+                remaining_students -= allocated;
 
-        // Verifica se nenhum horário estava disponível
-        if (!horario_encontrado)
-        {
-            printf("Não há mais horários disponíveis para o aluno %d\n", aluno_inicial + i);
-            break;
-        }
-    }
-
-    // Exibir um resumo ao final do processamento de inscrições
-    printf("Resumo das inscrições para o pedido de aluno inicial=%d, número de alunos=%d:\n", aluno_inicial, num_alunos);
-    for (int d = 0; d < NDISCIP; d++)
-    {
-        if (disciplinas_inscritas[d] > 0) // Só imprime se houver inscrições na disciplina
-        {
-            printf("Disciplina %d: %d alunos inscritos\n", d, disciplinas_inscritas[d]);
-            for (int h = 0; h < NHOR; h++)
-            {
-                if (horarios_inscritos[d][h] > 0)
-                {
-                    printf("  Horário %d: %d alunos inscritos\n", h, horarios_inscritos[d][h]);
-                }
+                printf("[support_agent] Alocando %d alunos na disciplina %d, horário %d. Vagas restantes: %d\n",
+                       allocated, d, h, disciplinas[d].horarios[h].vagas);
             }
         }
     }
 
-    snprintf(msg_out, BSIZE, "%d", inscritos);
-    int fd_out = open(nome_resp, O_WRONLY);
-    if (fd_out == -1)
+    students_registered = num_students - remaining_students;
+    printf("[support_agent] Total de alunos alocados: %d\n", students_registered);
+
+    pthread_mutex_unlock(&lock);
+
+    printf("[support_agent] Alunos alocados: %d. Enviando resposta para: %s\n", students_registered, response_pipe);
+
+    // Enviar resposta
+    int fd_response = open(response_pipe, O_WRONLY);
+    write(fd_response, &students_registered, sizeof(students_registered));
+    close(fd_response);
+
+    printf("[support_agent] Resposta enviada para %s\n", response_pipe);
+    free(message);
+    return NULL;
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc != 2)
     {
-        perror("Erro ao abrir o pipe de resposta");
+        fprintf(stderr, "Usage: %s <num_students>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    int num_students = atoi(argv[1]);
+
+    printf("[support_agent] Iniciado. Total de alunos: %d\n", num_students);
+
+    // Inicializar disciplinas e horários
+    pthread_mutex_init(&lock, NULL);
+    for (int d = 0; d < MAX_DISCIPLINES; d++)
+    {
+        for (int h = 0; h < MAX_HORARIOS; h++)
+        {
+            disciplinas[d].horarios[h].vagas = 1; // Exemplo: 10 vagas por horário
+        }
+    }
+
+    // Criar o named pipe do suporte
+    if (access(PIPE_SUPPORT, F_OK) == -1)
+    {
+        if (mkfifo(PIPE_SUPPORT, 0666) == -1)
+        {
+            perror("[support_agent] mkfifo");
+            exit(EXIT_FAILURE);
+        }
+        printf("[support_agent] Pipe principal criado: %s\n", PIPE_SUPPORT);
     }
     else
     {
-        write(fd_out, msg_out, strlen(msg_out) + 1);
-        close(fd_out);
+        printf("[support_agent] Pipe principal já existe: %s\n", PIPE_SUPPORT);
     }
-    pthread_mutex_unlock(&mutex);
-}
-
-int main()
-{
-    for (int i = 0; i < NDISCIP; i++)
+    // Processar pedidos
+    while (num_students > 0)
     {
-        for (int j = 0; j < NHOR; j++)
+        int fd_support = open(PIPE_SUPPORT, O_RDONLY);
+        if (fd_support == -1)
         {
-            horarios[i][j].disciplina = i;
-            horarios[i][j].horario = j;
-            horarios[i][j].vagas_disponiveis = NLUG;
-            horarios[i][j].vagas_totais = NLUG;
+            perror("[suporte_agente] open suporte pipe");
+            continue;
         }
+
+        char *message = malloc(256);
+        read(fd_support, message, 256);
+        close(fd_support);
+
+        pthread_t thread;
+        pthread_create(&thread, NULL, handle_request, message);
+        pthread_detach(thread);
+
+        num_students -= 1; // Exemplo simples, decrementa por pedido processado
     }
 
-    if (mkfifo(FIFO_IN, 0666) == -1 && errno != EEXIST)
-    {
-        perror("mkfifo");
-        return 1;
-    }
-
-    int fd = open(FIFO_IN, O_RDONLY);
-    if (fd == -1)
-    {
-        perror("Erro ao abrir o pipe");
-        unlink(FIFO_IN);
-        return 1;
-    }
-
-    char msg_in[BSIZE];
-    while (1)
-    {
-        ssize_t bytes_read = read(fd, msg_in, BSIZE);
-        if (bytes_read > 0)
-        {
-            msg_in[bytes_read] = '\0';
-            processar_pedido(msg_in);
-        }
-        else if (bytes_read == 0)
-        {
-            close(fd);
-            fd = open(FIFO_IN, O_RDONLY); // Reabrir o pipe para a próxima leitura
-        }
-        else
-        {
-            perror("Erro ao ler do pipe");
-        }
-    }
-
-    close(fd);
-    unlink(FIFO_IN);
-    printf("Suport Agent: Encerrado\n");
+    unlink(PIPE_SUPPORT);
+    pthread_mutex_destroy(&lock);
+    printf("[support_agent] Pipe principal removido: %s\n", PIPE_SUPPORT);
     return 0;
 }
