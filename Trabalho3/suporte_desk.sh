@@ -1,97 +1,62 @@
 #!/bin/bash
 
 PIPE_SUPPORT="/tmp/suporte"
+PIPE_ADMIN="/tmp/admin"
 LOCKFILE="/tmp/suporte_desk.lock"
 
-trap 'rm -f $PIPE_SUPPORT /tmp/student_* $LOCKFILE; pkill -f support_agent; exit' INT TERM EXIT
+trap 'rm -f $PIPE_SUPPORT /tmp/student_* $PIPE_ADMIN $LOCKFILE; pkill -f support_agent; exit' INT TERM EXIT
 
 if [ $# -ne 4 ]; then
     echo "Usage: $0 <NALUN> <NDISCIP> <NLUG> <NSTUD>"
     exit 1
 fi
 
-# Mecanismo de bloqueio para que nao possa rodar 2 scripts
-if [ -f $LOCKFILE ]; then
-    echo "Another instance of the script is running. Exiting."
-    exit 1
-fi
-touch $LOCKFILE
+NALUN=$1  # Number of students
+NDISCIP=$2  # Number of disciplines
+NLUG=$3  # Number of slots per discipline
+NSTUD=$4  # Number of student processes
 
-NALUN=$1
-NDISCIP=$2
-NLUG=$3
-NSTUD=$4
+# Cleanup old pipes
+echo "Removing old pipes..."
+rm -f "$PIPE_SUPPORT" "$PIPE_ADMIN" /tmp/student_*
 
-# Remover pipes existentes
-echo "Removendo pipes antigos..."
-rm -f /tmp/suporte /tmp/student_*
-if [ -p $PIPE_SUPPORT ]; then
-    echo "Removendo pipe principal existente: $PIPE_SUPPORT"
-    rm -f $PIPE_SUPPORT
-fi
+# Create main communication pipe
+echo "Creating main pipe ($PIPE_SUPPORT)..."
+mkfifo "$PIPE_SUPPORT"
+chmod 0666 "$PIPE_SUPPORT"
 
-for i in $(seq 1 $NSTUD); do
-    STUDENT_PIPE="/tmp/student_$i"
-    if [ -p $STUDENT_PIPE ]; then
-        echo "Removendo pipe do estudante existente: $STUDENT_PIPE"
-        rm -f $STUDENT_PIPE
-    fi
-done
+# Create admin pipe
+echo "Creating admin pipe ($PIPE_ADMIN)..."
+mkfifo "$PIPE_ADMIN"
+chmod 0666 "$PIPE_ADMIN"
 
-# Criar pipe do suporte
-echo "Criando pipe principal ($PIPE_SUPPORT)..."
-if [ ! -p $PIPE_SUPPORT ]; then
-    mkfifo $PIPE_SUPPORT || { echo "Erro ao criar $PIPE_SUPPORT"; exit 1; } #Cria o pipe principal (/tmp/suporte) usado pelo suporte_agente.
-    echo "Pipe principal criado: $PIPE_SUPPORT"
-fi
+# Start support agent
+echo "Starting support agent..."
+./suporte_agente "$NALUN" &
+sleep 1
 
-
-# Iniciar o agente de suporte
-echo "Iniciando o agente de suporte..."
-./suporte_agente $NALUN &
-if [ $? -ne 0 ]; then
-    echo "Erro ao iniciar support_agent"
-    exit 1
-fi
-
-# Iniciar os estudantes
+# Start student processes
+echo "Starting $NSTUD student processes..."
 students_per_process=$((NALUN / NSTUD))
-for i in $(seq 1 $NSTUD); do
-    STUDENT_PIPE="/tmp/student_$i"
-    echo "Criando pipe do estudante ($STUDENT_PIPE)..."
-    if [ ! -p $STUDENT_PIPE ]; then
-        mkfifo $STUDENT_PIPE                                             
+for ((i=1; i<=NSTUD; i++)); do
+    start_student=$((1 + (i-1)*students_per_process))
+    if [ $i -eq $NSTUD ]; then
+        # Last process gets remaining students
+        num_students=$((NALUN - (i-1)*students_per_process))
     else
-        echo "Pipe do estudante já existe: $STUDENT_PIPE"
+        num_students=$students_per_process
     fi
-
-    initial_student=$(( (i - 1) * students_per_process ))
-    echo "Iniciando estudante $i: inicial=$initial_student, total=$students_per_process"
     
-    # Passando os argumentos corretos ao ./student
-    ./student $i $initial_student $students_per_process &
-    echo "Estudante $i iniciado com sucesso."
+    echo "Starting student process $i: start=$start_student, count=$num_students"
+    ./student "$i" "$start_student" "$num_students" &
+    sleep 0.1
 done
 
-
-
-# Aguardar finalização
+# Wait for all background processes
 wait
 
-# Limpar pipes e remover lockfile
-echo "Limpando pipes..."
-if [ -p $PIPE_SUPPORT ]; then
-    rm -f $PIPE_SUPPORT
-    echo "Pipe principal removido: $PIPE_SUPPORT"
-fi
-
-for i in $(seq 1 $NSTUD); do
-    STUDENT_PIPE="/tmp/student_$i"
-    if [ -p $STUDENT_PIPE ]; then
-        rm -f $STUDENT_PIPE
-        echo "Pipe do estudante removido: $STUDENT_PIPE"
-    fi
-done
-
-rm -f $LOCKFILE
-echo "Execução finalizada."
+# Cleanup
+echo "Cleaning up..."
+rm -f "$PIPE_SUPPORT" "$PIPE_ADMIN" /tmp/student_*
+rm -f "$LOCKFILE"
+echo "Execution finished."
