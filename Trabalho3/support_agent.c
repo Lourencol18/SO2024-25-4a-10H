@@ -109,7 +109,7 @@ int inscrever_aluno(int id_aluno, int disciplina)
 void consultar_horarios(int num_aluno, const char *pipe_resposta)
 {
     char resposta[BUFFER_SIZE];
-    snprintf(resposta, sizeof(resposta), "%d", num_aluno);
+    snprintf(resposta, sizeof(resposta), "Aluno %d: ", num_aluno);
 
     for (int d = 0; d < MAX_DISCIPLINES; d++)
     {
@@ -121,7 +121,7 @@ void consultar_horarios(int num_aluno, const char *pipe_resposta)
                 if (disciplinas[d].horarios[h].alunos_inscritos[i] == num_aluno)
                 {
                     char temp[32];
-                    snprintf(temp, sizeof(temp), ",%d/%d", d, h);
+                    snprintf(temp, sizeof(temp), "%d/%d, ", d, h);
                     strncat(resposta, temp, sizeof(resposta) - strlen(resposta) - 1);
                 }
             }
@@ -129,11 +129,16 @@ void consultar_horarios(int num_aluno, const char *pipe_resposta)
         pthread_mutex_unlock(&trincos_disciplinas[d]);
     }
 
+    printf("[agente_suporte] Tentando abrir pipe de resposta: %s\n", pipe_resposta);
     int fd_resp = open(pipe_resposta, O_WRONLY);
     if (fd_resp != -1)
     {
         write(fd_resp, resposta, strlen(resposta) + 1);
         close(fd_resp);
+    }
+    else
+    {
+        perror("[agente_suporte] Erro ao abrir pipe de resposta para enviar horários");
     }
 }
 
@@ -142,6 +147,7 @@ void gravar_em_arquivo(const char *nome_arquivo, const char *pipe_resposta)
     FILE *arquivo = fopen(nome_arquivo, "w");
     if (!arquivo)
     {
+        printf("[agente_suporte] Tentando abrir pipe de resposta: %s\n", pipe_resposta);
         int fd_resp = open(pipe_resposta, O_WRONLY);
         if (fd_resp != -1)
         {
@@ -149,6 +155,7 @@ void gravar_em_arquivo(const char *nome_arquivo, const char *pipe_resposta)
             write(fd_resp, &erro, sizeof(erro));
             close(fd_resp);
         }
+        perror("[agente_suporte] Erro ao abrir arquivo para gravação");
         return;
     }
 
@@ -187,7 +194,7 @@ void gravar_em_arquivo(const char *nome_arquivo, const char *pipe_resposta)
     int fd_resp = open(pipe_resposta, O_WRONLY);
     if (fd_resp != -1)
     {
-        int sucesso = MAX_STUDENTS;
+        int sucesso = 1;
         write(fd_resp, &sucesso, sizeof(sucesso));
         close(fd_resp);
     }
@@ -248,35 +255,70 @@ void *processar_pedidos_admin(void *arg)
 
         if (len > 0)
         {
-            char *token = strtok(buffer, ",");
-            int codigo_op = atoi(token);
+            printf("[agente_suporte] Mensagem recebida do admin: %s\n", buffer);
 
-            char *pipe_resposta = strtok(NULL, ","); // Extrai o pipe de resposta
+            // Criar cópia do buffer para não modificar a string original
+            char buffer_copy[BUFFER_SIZE];
+            strncpy(buffer_copy, buffer, BUFFER_SIZE);
+
+            // Separar comando primeiro
+            char *comando_str = strtok(buffer_copy, ",");
+            if (!comando_str)
+            {
+                printf("[agente_suporte] Formato de mensagem inválido\n");
+                continue;
+            }
+
+            int codigo_op = atoi(comando_str);
+
+            // Pegar próximo token (pode ser parâmetro ou pipe_resposta)
+            char *next_token = strtok(NULL, ",");
+            if (!next_token)
+            {
+                printf("[agente_suporte] Faltam parâmetros na mensagem\n");
+                continue;
+            }
 
             switch (codigo_op)
             {
             case 1:
-            {
-                int num_aluno = atoi(strtok(NULL, ","));
-                consultar_horarios(num_aluno, pipe_resposta);
-                break;
-            }
             case 2:
             {
-                char *nome_arquivo = strtok(NULL, ",");
-                gravar_em_arquivo(nome_arquivo, pipe_resposta);
-                break;
+                // Para casos 1 e 2, precisamos do terceiro token (pipe_resposta)
+                char *pipe_resposta = strtok(NULL, ",");
+                if (!pipe_resposta)
+                {
+                    printf("[agente_suporte] Pipe de resposta não fornecido\n");
+                    continue;
+                }
+
+                if (codigo_op == 1)
+                {
+                    int num_aluno = atoi(next_token);
+                    printf("[agente_suporte] Consultando horários do aluno %d, pipe resposta: %s\n",
+                           num_aluno, pipe_resposta);
+                    consultar_horarios(num_aluno, pipe_resposta);
+                }
+                else // codigo_op == 2
+                {
+                    printf("[agente_suporte] Gravando em arquivo %s, pipe resposta: %s\n",
+                           next_token, pipe_resposta);
+                    gravar_em_arquivo(next_token, pipe_resposta);
+                }
             }
+            break;
+
             case 3:
             {
-                printf("[agente_suporte] Admin solicitou término.\n");
+                // Para case 3, next_token já é o pipe_resposta
+                char *pipe_resposta = next_token;
+                printf("[agente_suporte] Recebido comando de término, pipe resposta: %s\n",
+                       pipe_resposta);
 
-                // Finalizar o suporte
                 pthread_mutex_lock(&trinco_geral);
                 continuar_execucao = 0;
                 pthread_mutex_unlock(&trinco_geral);
 
-                // Responder ao admin
                 int fd_resp = open(pipe_resposta, O_WRONLY);
                 if (fd_resp != -1)
                 {
@@ -287,9 +329,9 @@ void *processar_pedidos_admin(void *arg)
                 {
                     perror("[agente_suporte] Erro ao abrir pipe de resposta para escrever 'Ok'");
                 }
-
-                break;
             }
+            break;
+
             default:
                 printf("[agente_suporte] Comando inválido do admin.\n");
             }
