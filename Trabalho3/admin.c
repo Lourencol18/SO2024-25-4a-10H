@@ -4,131 +4,158 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <errno.h>
 
 #define PIPE_ADMIN "/tmp/admin"
-#define PIPE_ADMIN_RESP "/tmp/admin_resp"
-#define BUFFER_SIZE 2048  // Aumentado para garantir espaço suficiente
-#define MAX_FILENAME 256
+#define BUFFER_SIZE 1024
 
-int main() {
-    int fd_admin, fd_response;
-    char mensagem[BUFFER_SIZE];
-    char buffer[BUFFER_SIZE];
-    char nome_arquivo[MAX_FILENAME];
-    int escolha, num_aluno;
+void limpar_buffer()
+{
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF)
+        ;
+}
 
-    // Criar pipe de resposta se não existir
-    mkfifo(PIPE_ADMIN_RESP, 0666);
+int main()
+{
+    char pipe_resposta[256] = "/tmp/admin_resp";
 
-    printf("Menu de Operações - Admin\n");
-    printf("1. Consultar horários de um aluno\n");
-    printf("2. Gravar em arquivo\n");
-    printf("3. Terminar o agente\n");
-    printf("0. Sair\n");
+    // Criar pipe de resposta
+    unlink(pipe_resposta);
+    if (mkfifo(pipe_resposta, 0666) == -1)
+    {
+        perror("[admin] Erro ao criar pipe de resposta");
+        exit(1);
+    }
 
-    while (1) {
-        printf("\nEscolha uma opção: ");
-        if (scanf("%d", &escolha) != 1) {
-            printf("Entrada inválida. Tente novamente.\n");
-            while (getchar() != '\n'); // Limpa o buffer
+    // Abrir pipe admin para escrita
+
+    int fd_admin = open(PIPE_ADMIN, O_WRONLY);
+    if (fd_admin == -1)
+    {
+        perror("[admin] Erro ao abrir pipe principal");
+        unlink(pipe_resposta);
+        exit(1);
+    }
+    printf("[admin] Pipe admin aberto com sucesso para escrita.\n");
+
+    while (1)
+    {
+        printf("\nMenu Admin:\n");
+        printf("1. Consultar horários de um aluno\n");
+        printf("2. Gravar em arquivo\n");
+        printf("3. Terminar o agente\n");
+        printf("0. Sair (somente admin)\n");
+        printf("Escolha: ");
+
+        int opcao;
+        if (scanf("%d", &opcao) != 1)
+        {
+            printf("Opção inválida!\n");
+            limpar_buffer();
             continue;
         }
 
-        // Abre o pipe do admin
-        fd_admin = open(PIPE_ADMIN, O_WRONLY);
-        if (fd_admin == -1) {
-            perror("[admin] Erro ao abrir o pipe principal");
-            continue;
+        limpar_buffer();
+
+        char mensagem[BUFFER_SIZE];
+        switch (opcao)
+        {
+        case 1:
+        {
+            printf("Número do aluno: ");
+            int num_aluno;
+            if (scanf("%d", &num_aluno) != 1)
+            {
+                printf("Número de aluno inválido!\n");
+                limpar_buffer();
+                break;
+            }
+            limpar_buffer();
+
+            snprintf(mensagem, BUFFER_SIZE, "1,%d,%s", num_aluno, pipe_resposta);
+            write(fd_admin, mensagem, strlen(mensagem) + 1);
+
+            int fd_resp = open(pipe_resposta, O_RDONLY);
+            char resposta[BUFFER_SIZE] = {0};
+            read(fd_resp, resposta, BUFFER_SIZE - 1);
+            close(fd_resp);
+
+            printf("Resposta: %s\n", resposta);
+            break;
+        }
+        case 2:
+        {
+            printf("Nome do arquivo para gravação: ");
+            char nome_arquivo[256];
+            if (scanf("%255s", nome_arquivo) != 1)
+            {
+                printf("Nome de arquivo inválido!\n");
+                limpar_buffer();
+                break;
+            }
+            limpar_buffer();
+
+            snprintf(mensagem, BUFFER_SIZE, "2,%s,%s", nome_arquivo, pipe_resposta);
+            write(fd_admin, mensagem, strlen(mensagem) + 1);
+
+            int fd_resp = open(pipe_resposta, O_RDONLY);
+            int resultado;
+            read(fd_resp, &resultado, sizeof(resultado));
+            close(fd_resp);
+
+            if (resultado == -1)
+            {
+                printf("[admin] Erro ao gravar no arquivo %s\n", nome_arquivo);
+            }
+            else
+            {
+                printf("[admin] Arquivo %s gravado com sucesso.\n", nome_arquivo);
+            }
+            break;
+        }
+        case 3:
+        {
+            printf("[admin] Enviando comando para terminar o agente...\n");
+
+            // Enviar comando para finalizar o agente
+            snprintf(mensagem, BUFFER_SIZE, "3,%s", pipe_resposta);
+            write(fd_admin, mensagem, strlen(mensagem) + 1);
+
+            // Ler resposta do agente
+            int fd_resp = open(pipe_resposta, O_RDONLY);
+            if (fd_resp == -1)
+            {
+                perror("[admin] Erro ao abrir pipe de resposta");
+                break;
+            }
+
+            char resposta[BUFFER_SIZE] = {0};
+            read(fd_resp, resposta, BUFFER_SIZE - 1);
+            close(fd_resp);
+
+            if (strcmp(resposta, "Ok") == 0)
+            {
+                printf("[admin] Support_agent finalizado com sucesso. Admin continua ativo.\n");
+            }
+            else
+            {
+                printf("[admin] Erro ao finalizar o support_agent.\n");
+            }
+            break;
         }
 
-        switch (escolha) {
-            case 1: // Consultar horários de um aluno
-                printf("Digite o número do aluno: ");
-                scanf("%d", &num_aluno);
+        case 0:
+            printf("[admin] Encerrando admin...\n");
+            unlink(pipe_resposta); // Remove o pipe de resposta
+            close(fd_admin);       // Fecha o pipe admin
+            exit(0);
 
-                // Montar mensagem para o support_agent
-                int n = snprintf(mensagem, sizeof(mensagem), "1,%d,%s", num_aluno, PIPE_ADMIN_RESP);
-                if (n < 0 || n >= sizeof(mensagem)) {
-                    printf("[admin] Erro: mensagem muito longa\n");
-                    close(fd_admin);
-                    break;
-                }
-                write(fd_admin, mensagem, strlen(mensagem) + 1);
-                close(fd_admin);
-
-                // Ler a resposta
-                fd_response = open(PIPE_ADMIN_RESP, O_RDONLY);
-                read(fd_response, buffer, BUFFER_SIZE - 1);
-                buffer[BUFFER_SIZE - 1] = '\0';  // Garante terminação
-                close(fd_response);
-                
-                printf("[admin] Horários do aluno %d: %s\n", num_aluno, buffer);
-                break;
-
-            case 2: // Gravar em arquivo
-                printf("Digite o nome do arquivo para gravação: ");
-                scanf("%s", nome_arquivo);
-                nome_arquivo[MAX_FILENAME - 1] = '\0';  // Garante terminação
-
-                // Enviar mensagem para o support_agent
-                n = snprintf(mensagem, sizeof(mensagem), "2,%s,%s", nome_arquivo, PIPE_ADMIN_RESP);
-                if (n < 0 || n >= sizeof(mensagem)) {
-                    printf("[admin] Erro: nome do arquivo muito longo\n");
-                    close(fd_admin);
-                    break;
-                }
-                write(fd_admin, mensagem, strlen(mensagem) + 1);
-                close(fd_admin);
-
-                // Ler a resposta
-                fd_response = open(PIPE_ADMIN_RESP, O_RDONLY);
-                read(fd_response, buffer, BUFFER_SIZE - 1);
-                buffer[BUFFER_SIZE - 1] = '\0';  // Garante terminação
-                close(fd_response);
-
-                int num_alunos = atoi(buffer);
-                if (num_alunos >= 0) {
-                    printf("[admin] Dados salvos no arquivo %s. Total de alunos: %d\n", 
-                           nome_arquivo, num_alunos);
-                } else {
-                    printf("[admin] Erro ao salvar no arquivo %s\n", nome_arquivo);
-                }
-                break;
-
-            case 3: // Terminar o agente
-                n = snprintf(mensagem, sizeof(mensagem), "3,%s", PIPE_ADMIN_RESP);
-                if (n < 0 || n >= sizeof(mensagem)) {
-                    printf("[admin] Erro: mensagem muito longa\n");
-                    close(fd_admin);
-                    break;
-                }
-                write(fd_admin, mensagem, strlen(mensagem) + 1);
-                close(fd_admin);
-
-                // Ler confirmação
-                fd_response = open(PIPE_ADMIN_RESP, O_RDONLY);
-                read(fd_response, buffer, BUFFER_SIZE - 1);
-                buffer[BUFFER_SIZE - 1] = '\0';  // Garante terminação
-                close(fd_response);
-
-                printf("[admin] Operação: Terminar o support_agent.\n");
-                unlink(PIPE_ADMIN_RESP);
-                exit(0);
-
-            case 0: // Sair
-                close(fd_admin);
-                unlink(PIPE_ADMIN_RESP);
-                printf("Encerrando o admin.\n");
-                exit(0);
-
-            default:
-                printf("Opção inválida. Tente novamente.\n");
-                close(fd_admin);
-                break;
+        default:
+            printf("Opção inválida! Escolha novamente.\n");
+            break;
         }
     }
 
+    unlink(pipe_resposta);
     return 0;
 }
