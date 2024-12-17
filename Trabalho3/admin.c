@@ -27,8 +27,7 @@ int main()
         exit(1);
     }
 
-    // Abrir pipe admin para escrita
-
+    // Abrir pipe admin
     int fd_admin = open(PIPE_ADMIN, O_WRONLY);
     if (fd_admin == -1)
     {
@@ -60,7 +59,7 @@ int main()
         char mensagem[BUFFER_SIZE];
         switch (opcao)
         {
-        case 1:
+        case 1: // Consultar horários do aluno
         {
             printf("Número do aluno: ");
             int num_aluno;
@@ -83,7 +82,7 @@ int main()
             printf("Resposta: %s\n", resposta);
             break;
         }
-        case 2:
+        case 2: // Gravar em arquivo
         {
             printf("Nome do arquivo para gravação: ");
             char nome_arquivo[256];
@@ -113,15 +112,13 @@ int main()
             }
             break;
         }
-        case 3:
+        case 3: // Terminar agente
         {
             printf("[admin] Enviando comando para terminar o agente...\n");
 
-            // Enviar comando para finalizar o agente
             snprintf(mensagem, BUFFER_SIZE, "3,%s", pipe_resposta);
             write(fd_admin, mensagem, strlen(mensagem) + 1);
 
-            // Ler resposta do agente
             int fd_resp = open(pipe_resposta, O_RDONLY);
             if (fd_resp == -1)
             {
@@ -146,8 +143,8 @@ int main()
 
         case 0:
             printf("[admin] Encerrando admin...\n");
-            unlink(pipe_resposta); // Remove o pipe de resposta
-            close(fd_admin);       // Fecha o pipe admin
+            unlink(pipe_resposta);
+            close(fd_admin);
             exit(0);
 
         default:

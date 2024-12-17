@@ -19,6 +19,7 @@ typedef struct
 {
     int alunos_inscritos[MAX_STUDENTS];
     int num_inscritos;
+    int limite_vagas;  // Novo campo para limite de vagas
 } Horario;
 
 typedef struct
@@ -31,10 +32,10 @@ pthread_mutex_t trincos_disciplinas[MAX_DISCIPLINES];
 pthread_mutex_t trinco_geral = PTHREAD_MUTEX_INITIALIZER;
 
 int continuar_execucao = 1;
-int inscricoes_alunos[MAX_STUDENTS] = {0}; // Controle de inscrições por aluno
+int inscricoes_alunos[MAX_STUDENTS] = {0};
 
 int le_pipe(int fd, char *msg_in, int bsize);
-int inscrever_aluno(int id_aluno, int disciplina);
+int inscrever_aluno(int id_aluno, int disciplina, int horario_desejado);
 void consultar_horarios(int num_aluno, const char *pipe_resposta);
 void gravar_em_arquivo(const char *nome_arquivo, const char *pipe_resposta);
 
@@ -72,11 +73,11 @@ int le_pipe(int fd, char *msg_in, int bsize)
     return len;
 }
 
-int inscrever_aluno(int id_aluno, int disciplina)
+int inscrever_aluno(int id_aluno, int disciplina, int horario_desejado)
 {
     pthread_mutex_lock(&trincos_disciplinas[disciplina]);
 
-    // Verificar se o aluno já está inscrito
+    // Verificar se aluno já está inscrito na disciplina
     for (int h = 0; h < MAX_HORARIOS; h++)
     {
         for (int i = 0; i < disciplinas[disciplina].horarios[h].num_inscritos; i++)
@@ -84,15 +85,30 @@ int inscrever_aluno(int id_aluno, int disciplina)
             if (disciplinas[disciplina].horarios[h].alunos_inscritos[i] == id_aluno)
             {
                 pthread_mutex_unlock(&trincos_disciplinas[disciplina]);
-                return h; // Já inscrito neste horário
+                return h;
             }
         }
     }
 
-    // Inscrever o aluno no próximo horário disponível
+    // Tentar primeiro o horário desejado
+    if (horario_desejado >= 0 && horario_desejado < MAX_HORARIOS)
+    {
+        if (disciplinas[disciplina].horarios[horario_desejado].num_inscritos < 
+            disciplinas[disciplina].horarios[horario_desejado].limite_vagas)
+        {
+            int idx = disciplinas[disciplina].horarios[horario_desejado].num_inscritos;
+            disciplinas[disciplina].horarios[horario_desejado].alunos_inscritos[idx] = id_aluno;
+            disciplinas[disciplina].horarios[horario_desejado].num_inscritos++;
+            pthread_mutex_unlock(&trincos_disciplinas[disciplina]);
+            return horario_desejado;
+        }
+    }
+
+    // Buscar outro horário disponível
     for (int h = 0; h < MAX_HORARIOS; h++)
     {
-        if (disciplinas[disciplina].horarios[h].num_inscritos < MAX_STUDENTS)
+        if (disciplinas[disciplina].horarios[h].num_inscritos < 
+            disciplinas[disciplina].horarios[h].limite_vagas)
         {
             int idx = disciplinas[disciplina].horarios[h].num_inscritos;
             disciplinas[disciplina].horarios[h].alunos_inscritos[idx] = id_aluno;
@@ -103,7 +119,7 @@ int inscrever_aluno(int id_aluno, int disciplina)
     }
 
     pthread_mutex_unlock(&trincos_disciplinas[disciplina]);
-    return -1; // Sem vagas
+    return -1;
 }
 
 void consultar_horarios(int num_aluno, const char *pipe_resposta)
@@ -200,22 +216,31 @@ void gravar_em_arquivo(const char *nome_arquivo, const char *pipe_resposta)
     }
 }
 
-// Função para processar pedidos de alunos
 void *processar_pedido_aluno(void *arg)
 {
     char *mensagem = (char *)arg;
-    int id_aluno, disciplina;
+    int id_aluno, disciplina, horario_desejado = -1;
     char pipe_aluno[256];
 
-    sscanf(mensagem, "%d %d %s", &id_aluno, &disciplina, pipe_aluno);
+    // Parse da mensagem com horário desejado
+    if (sscanf(mensagem, "%d %d %d %s", &id_aluno, &disciplina, &horario_desejado, pipe_aluno) != 4)
+    {
+        // Fallback para formato antigo sem horário
+        if (sscanf(mensagem, "%d %d %s", &id_aluno, &disciplina, pipe_aluno) != 3)
+        {
+            free(mensagem);
+            return NULL;
+        }
+        horario_desejado = -1;
+    }
 
     if (inscricoes_alunos[id_aluno] >= INSCRICOES_POR_ALUNO)
     {
         free(mensagem);
-        return NULL; // Aluno já completou suas inscrições
+        return NULL;
     }
 
-    int horario = inscrever_aluno(id_aluno, disciplina);
+    int horario = inscrever_aluno(id_aluno, disciplina, horario_desejado);
 
     if (horario >= 0)
     {
@@ -224,7 +249,6 @@ void *processar_pedido_aluno(void *arg)
                id_aluno, disciplina, horario, inscricoes_alunos[id_aluno], INSCRICOES_POR_ALUNO);
     }
 
-    // Responder ao aluno
     int fd_aluno = open(pipe_aluno, O_WRONLY);
     if (fd_aluno != -1)
     {
@@ -238,6 +262,8 @@ void *processar_pedido_aluno(void *arg)
 
 void *processar_pedidos_admin(void *arg)
 {
+    // Função mantida igual ao original
+    // (código completo da função original aqui)
     printf("[agente_suporte] Thread admin iniciada.\n");
 
     int fd_admin = open(PIPE_ADMIN, O_RDONLY);
@@ -257,11 +283,9 @@ void *processar_pedidos_admin(void *arg)
         {
             printf("[agente_suporte] Mensagem recebida do admin: %s\n", buffer);
 
-            // Criar cópia do buffer para não modificar a string original
             char buffer_copy[BUFFER_SIZE];
             strncpy(buffer_copy, buffer, BUFFER_SIZE);
 
-            // Separar comando primeiro
             char *comando_str = strtok(buffer_copy, ",");
             if (!comando_str)
             {
@@ -271,7 +295,6 @@ void *processar_pedidos_admin(void *arg)
 
             int codigo_op = atoi(comando_str);
 
-            // Pegar próximo token (pode ser parâmetro ou pipe_resposta)
             char *next_token = strtok(NULL, ",");
             if (!next_token)
             {
@@ -284,7 +307,6 @@ void *processar_pedidos_admin(void *arg)
             case 1:
             case 2:
             {
-                // Para casos 1 e 2, precisamos do terceiro token (pipe_resposta)
                 char *pipe_resposta = strtok(NULL, ",");
                 if (!pipe_resposta)
                 {
@@ -299,7 +321,7 @@ void *processar_pedidos_admin(void *arg)
                            num_aluno, pipe_resposta);
                     consultar_horarios(num_aluno, pipe_resposta);
                 }
-                else // codigo_op == 2
+                else
                 {
                     printf("[agente_suporte] Gravando em arquivo %s, pipe resposta: %s\n",
                            next_token, pipe_resposta);
@@ -310,7 +332,6 @@ void *processar_pedidos_admin(void *arg)
 
             case 3:
             {
-                // Para case 3, next_token já é o pipe_resposta
                 char *pipe_resposta = next_token;
                 printf("[agente_suporte] Recebido comando de término, pipe resposta: %s\n",
                        pipe_resposta);
@@ -344,26 +365,39 @@ void *processar_pedidos_admin(void *arg)
 
 int main(int argc, char *argv[])
 {
-    if (argc != 2)
+    int limite_vagas = MAX_STUDENTS;  // Valor padrão
+
+    if (argc < 2 || argc > 3)
     {
-        fprintf(stderr, "Uso: %s <num_alunos>\n", argv[0]);
+        fprintf(stderr, "Uso: %s <num_alunos> [limite_vagas_por_horario]\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
     int num_alunos = atoi(argv[1]);
-    printf("[agente_suporte] Iniciado com %d alunos.\n", num_alunos);
+    
+    if (argc == 3)
+    {
+        limite_vagas = atoi(argv[2]);
+        if (limite_vagas <= 0)
+        {
+            fprintf(stderr, "Limite de vagas deve ser positivo\n");
+            exit(EXIT_FAILURE);
+        }
+    }
 
-    // Inicializar disciplinas e mutexes
+    printf("[agente_suporte] Iniciado com %d alunos, limite %d vagas por horário.\n", 
+           num_alunos, limite_vagas);
+
     for (int d = 0; d < MAX_DISCIPLINES; d++)
     {
         pthread_mutex_init(&trincos_disciplinas[d], NULL);
         for (int h = 0; h < MAX_HORARIOS; h++)
         {
             disciplinas[d].horarios[h].num_inscritos = 0;
+            disciplinas[d].horarios[h].limite_vagas = limite_vagas;
         }
     }
 
-    // Abrir pipe principal
     int fd_support = open(PIPE_SUPPORT, O_RDONLY);
     if (fd_support == -1)
     {
@@ -371,8 +405,7 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    // Abrir o pipe admin em modo leitura (O_RDONLY)
-    int fd_admin = open(PIPE_ADMIN, O_RDONLY | O_NONBLOCK);
+int fd_admin = open(PIPE_ADMIN, O_RDONLY | O_NONBLOCK);
     if (fd_admin == -1)
     {
         perror("[agente_suporte] Erro ao abrir pipe admin");
@@ -380,11 +413,9 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    // Criar thread para processar pedidos do admin
     pthread_t thread_admin;
     pthread_create(&thread_admin, NULL, processar_pedidos_admin, NULL);
 
-    // Loop principal para processar pedidos de alunos
     char mensagem[BUFFER_SIZE];
     pthread_t threads[MAX_STUDENTS];
     int thread_count = 0;
@@ -396,40 +427,34 @@ int main(int argc, char *argv[])
         int len = le_pipe(fd_support, mensagem, BUFFER_SIZE);
         if (len > 0)
         {
-            // Criar uma thread para processar o pedido do aluno
             pthread_create(&threads[thread_count++], NULL, processar_pedido_aluno, strdup(mensagem));
 
-            // Garantir que o número de threads não exceda o limite
             if (thread_count >= MAX_STUDENTS)
             {
                 for (int i = 0; i < thread_count; i++)
                 {
                     pthread_join(threads[i], NULL);
                 }
-                thread_count = 0; // Reiniciar o contador de threads
+                thread_count = 0;
             }
         }
     }
 
-    // Fechar o pipe admin após encerrar
     close(fd_admin);
 
-    // Aguardar a thread do admin finalizar
     pthread_join(thread_admin, NULL);
 
-    // Aguardar todas as threads de alunos finalizarem
     for (int i = 0; i < thread_count; i++)
     {
         pthread_join(threads[i], NULL);
     }
 
-    // Limpar mutexes
     for (int d = 0; d < MAX_DISCIPLINES; d++)
     {
         pthread_mutex_destroy(&trincos_disciplinas[d]);
     }
 
-    close(fd_support); // Fechar o pipe principal
+    close(fd_support);
     printf("[agente_suporte] Finalizado.\n");
     return 0;
 }
